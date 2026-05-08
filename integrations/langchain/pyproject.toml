@@ -52,6 +52,12 @@ test = [
     "pytest>=8",
 ]
 
+nvidia = [
+    # Allow pip to determine the compatible version based on the installed version of langchain
+    "langchain-nvidia-ai-endpoints"
+]
+
+
 [project.urls]
 Documentation = "https://nvidia.github.io/NeMo-Flow/"
 Homepage = "https://github.com/NVIDIA/NeMo-Flow"
