@@ -1235,6 +1235,10 @@ docs = [
     { name = "sphinxcontrib-mermaid" },
     { name = "sphinxcontrib-rust" },
 ]
+libs = [
+    { name = "langchain-nemo-flow" },
+    { name = "nemo-flow" },
+]
 test = [
     { name = "pydantic" },
     { name = "pytest" },
@@ -1266,6 +1270,10 @@ docs = [
     { name = "sphinx-multiversion", specifier = "~=0.2" },
     { name = "sphinxcontrib-mermaid", specifier = "~=1.0" },
     { name = "sphinxcontrib-rust", specifier = ">=1.0,<1.1" },
+]
+libs = [
+    { name = "langchain-nemo-flow", editable = "integrations/langchain" },
+    { name = "nemo-flow", editable = "python" },
 ]
 test = [
     { name = "pydantic", specifier = ">=2" },
