@@ -77,5 +77,3 @@ select = ["E", "F", "W", "I"]
 [tool.uv]
 default-groups = ["test"]
 
-[tool.uv.sources]
-nemo-flow = { path = "../..", editable = true }
