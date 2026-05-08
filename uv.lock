@@ -802,10 +802,12 @@ dependencies = [
     { name = "nemo-flow" },
 ]
 
-[package.dev-dependencies]
+[package.optional-dependencies]
 nvidia = [
     { name = "langchain-nvidia-ai-endpoints" },
 ]
+
+[package.dev-dependencies]
 test = [
     { name = "pytest" },
 ]
@@ -814,11 +816,12 @@ test = [
 requires-dist = [
     { name = "langchain", specifier = ">=1.2.11,<2.0.0" },
     { name = "langchain-core" },
+    { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'" },
     { name = "nemo-flow", editable = "python" },
 ]
+provides-extras = ["nvidia"]
 
 [package.metadata.requires-dev]
-nvidia = [{ name = "langchain-nvidia-ai-endpoints" }]
 test = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
@@ -1236,7 +1239,7 @@ docs = [
     { name = "sphinxcontrib-rust" },
 ]
 libs = [
-    { name = "langchain-nemo-flow" },
+    { name = "langchain-nemo-flow", extra = ["nvidia"] },
     { name = "nemo-flow" },
 ]
 test = [
@@ -1272,7 +1275,7 @@ docs = [
     { name = "sphinxcontrib-rust", specifier = ">=1.0,<1.1" },
 ]
 libs = [
-    { name = "langchain-nemo-flow", editable = "integrations/langchain" },
+    { name = "langchain-nemo-flow", extras = ["nvidia"], editable = "integrations/langchain" },
     { name = "nemo-flow", editable = "python" },
 ]
 test = [

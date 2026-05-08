@@ -52,6 +52,7 @@ test = [
     "pytest>=8",
 ]
 
+[project.optional-dependencies]
 nvidia = [
     # Allow pip to determine the compatible version based on the installed version of langchain
     "langchain-nvidia-ai-endpoints"

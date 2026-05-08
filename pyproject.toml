@@ -44,7 +44,7 @@ Repository = "https://github.com/NVIDIA/NeMo-Flow"
 [dependency-groups]
 libs = [
     "nemo-flow",
-    "langchain-nemo-flow",
+    "langchain-nemo-flow[nvidia]",
 ]
 
 dev = [
