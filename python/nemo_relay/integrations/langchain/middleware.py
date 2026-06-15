@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from langchain.agents.middleware import AgentMiddleware
 
@@ -25,6 +25,13 @@ if TYPE_CHECKING:
     from langchain.agents.middleware import ModelRequest, ModelResponse, ToolCallRequest
     from langchain_core.messages import ToolMessage
     from langgraph.types import Command
+
+
+class _ModelCallValues(NamedTuple):
+    object_codec: nemo_relay.typed.BestEffortAnyCodec
+    llm_request: nemo_relay.LLMRequest
+    model_name: str
+    model_codec: LangChainCodec
 
 
 class NemoRelayMiddleware(AgentMiddleware):
@@ -47,13 +54,13 @@ class NemoRelayMiddleware(AgentMiddleware):
         """Middleware name used by LangChain graph nodes and traces."""
         return self._name
 
-    def _prepare_model_call(self, request: ModelRequest[Any]) -> tuple:
+    def _prepare_model_call(self, request: ModelRequest[Any]) -> _ModelCallValues:
         """Boilerplate code common to both wrap_model_call and awrap_model_call"""
         object_codec = nemo_relay.typed.BestEffortAnyCodec()
         model_name = get_model_name(request.model)
         llm_request = nemo_relay.LLMRequest({}, model_request_to_payload(model_name, request))
         model_codec = LangChainCodec()
-        return (object_codec, llm_request, model_name, model_codec)
+        return _ModelCallValues(object_codec, llm_request, model_name, model_codec)
 
     def wrap_model_call(
         self,
@@ -61,25 +68,25 @@ class NemoRelayMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
         """Wrap a sync LangChain agent model call in NeMo Relay LLM execution."""
-        (object_codec, llm_request, model_name, model_codec) = self._prepare_model_call(request)
+        values = self._prepare_model_call(request)
 
         async def _call(req: nemo_relay.LLMRequest) -> Any:
             response = handler(payload_to_model_request(request, req))
-            return model_response_to_json(response, object_codec)
+            return model_response_to_json(response, values.object_codec)
 
         async def _execute() -> Any:
             # Wrapper to ensure nemo_relay.llm.execute isn't called until we are inside an asyncio loop
             return await nemo_relay.llm.execute(
-                model_name,
-                llm_request,
+                values.model_name,
+                values.llm_request,
                 _call,
-                model_name=model_name,
-                codec=model_codec,
-                response_codec=model_codec,
+                model_name=values.model_name,
+                codec=values.model_codec,
+                response_codec=values.model_codec,
             )
 
         result = run_sync(_execute())
-        return model_response_from_json(result, object_codec)
+        return model_response_from_json(result, values.object_codec)
 
     async def awrap_model_call(
         self,
@@ -87,21 +94,21 @@ class NemoRelayMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
         """Wrap an async LangChain agent model call in NeMo Relay LLM execution."""
-        (object_codec, llm_request, model_name, model_codec) = self._prepare_model_call(request)
+        values = self._prepare_model_call(request)
 
         async def _call(req: nemo_relay.LLMRequest) -> Any:
             response = await handler(payload_to_model_request(request, req))
-            return model_response_to_json(response, object_codec)
+            return model_response_to_json(response, values.object_codec)
 
         result = await nemo_relay.llm.execute(
-            model_name,
-            llm_request,
+            values.model_name,
+            values.llm_request,
             _call,
-            model_name=model_name,
-            codec=model_codec,
-            response_codec=model_codec,
+            model_name=values.model_name,
+            codec=values.model_codec,
+            response_codec=values.model_codec,
         )
-        return model_response_from_json(result, object_codec)
+        return model_response_from_json(result, values.object_codec)
 
     def _prepare_tool_call(self, request: ToolCallRequest) -> tuple:
         """Boilerplate code common to both wrap_tool_call and awrap_tool_call"""

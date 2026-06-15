@@ -25,6 +25,7 @@ from nemo_relay.codecs import LlmCodec
 
 if TYPE_CHECKING:
     from langchain.agents.middleware import ModelRequest
+    from nemo_relay import Json
 
 LANGCHAIN_MODEL_RESPONSE_KEY = "__nemo_relay_integrations_langchain_model_response"
 _LANGCHAIN_MODELED_REQUEST_KEYS = {"messages", "model", "tool_choice", "tools"}
@@ -216,14 +217,17 @@ def split_system_message(messages: list[BaseMessage]) -> tuple[SystemMessage | N
     return None, messages
 
 
-def model_request_to_payload(model_name: str | None, request: ModelRequest[Any]) -> dict[str, Any]:
-    """Serialize public ``ModelRequest`` fields into a JSON-compatible payload."""
+def model_request_to_payload(model_name: str | None, request: ModelRequest[Any]) -> dict[str, Json]:
+    """
+    Serialize a LangChain `ModelRequest` instance into a JSON-compatible dictionary that can be used to construct an
+    LLMRequest.
+    """
     messages: list[BaseMessage] = []
     if request.system_message is not None:
         messages.append(request.system_message)
     messages.extend(request.messages)
 
-    payload: dict[str, Any] = {
+    payload: dict[str, Json] = {
         "messages": messages_to_dict(messages),
     }
     if model_name:
