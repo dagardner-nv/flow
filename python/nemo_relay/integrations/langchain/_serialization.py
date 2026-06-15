@@ -25,6 +25,7 @@ from nemo_relay.codecs import LlmCodec
 
 if TYPE_CHECKING:
     from langchain.agents.middleware import ModelRequest
+    from nemo_relay import JsonObject
 
 LANGCHAIN_MODEL_RESPONSE_KEY = "__nemo_relay_integrations_langchain_model_response"
 _LANGCHAIN_MODELED_REQUEST_KEYS = {"messages", "model", "tool_choice", "tools"}
@@ -221,9 +222,14 @@ def lc_model_request_to_relay_llm_request(model_name: str | None, request: Model
     Serialize a LangChain ``ModelRequest`` instance into a NeMo Relay ``LLMRequest``.
     """
     messages: list[BaseMessage] = []
+    content_blocks: list[JsonObject] = []
     if request.system_message is not None:
         messages.append(request.system_message)
+        content_blocks.extend(request.system_message.content_blocks)
+
     messages.extend(request.messages)
+    for msg in request.messages:
+        content_blocks.extend(msg.content_blocks)
 
     payload = {
         "messages": messages_to_dict(messages),
