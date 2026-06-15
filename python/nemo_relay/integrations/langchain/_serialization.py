@@ -114,43 +114,6 @@ class LangChainCodec(LlmCodec):
         return langchain_tool_calls or None
 
     @classmethod
-    def _langchain_message_to_annotated(cls, message: BaseMessage) -> list[dict[str, Any]]:
-        content = message.content
-        if content is None:
-            content = []
-        elif isinstance(content, str):
-            content = [content]
-
-        name = message.name
-        role = _LC_TO_RELAY_MESSAGE_ROLE.get(message.type, message.type)
-
-        messages = []
-        for msg in content:
-            relay_message: dict[str, Any] = {"role": role}
-            if isinstance(msg, str):
-                relay_message["content"] = msg
-            elif isinstance(msg, dict):
-                relay_message.update(msg)
-                if "content" not in relay_message:
-                    relay_message["content"] = relay_message.pop("text", "")
-            else:
-                raise ValueError(f"Unsupported LangChain message content type: {type(content)}")
-
-            if name is not None:
-                relay_message["name"] = name
-
-            # Using getattr as we are inferring subclasses of BaseMessage based upon the role
-            if role == "assistant":
-                tool_calls = getattr(message, "tool_calls", [])
-                relay_message["tool_calls"] = cls._langchain_tool_calls_to_annotated(tool_calls)
-            elif role == "tool":
-                relay_message["tool_call_id"] = getattr(message, "tool_call_id", "")
-
-            messages.append(relay_message)
-
-        return messages
-
-    @classmethod
     def _annotated_message_to_langchain(cls, message: dict[str, Any]) -> BaseMessage:
         role = message.get("role")
         content = message.get("content", "")
@@ -170,24 +133,26 @@ class LangChainCodec(LlmCodec):
     def decode(self, request: LLMRequest) -> AnnotatedLLMRequest:
         """Decode a LangChain-shaped request payload into an annotated request."""
         payload = request.content
-        raw_messages = payload.get("messages", [])
-        messages: list[dict[str, Any]] = []
-        if isinstance(raw_messages, list):
-            for message in messages_from_dict(raw_messages):
-                messages.extend(self._langchain_message_to_annotated(message))
+        messages = payload.get("messages", [])
+        annotated_messages: list[dict[str, Any]] = []
+        for message in messages:
+            msg_type = message["type"]
+            role = _LC_TO_RELAY_MESSAGE_ROLE.get(msg_type, msg_type)
+            annotated_messages.append({"role": role, "content": message.get("content", "")})
 
         model = payload.get("model")
         tools = payload.get("tools")
         tool_choice = payload.get("tool_choice")
         extra = {key: value for key, value in payload.items() if key not in _LANGCHAIN_MODELED_REQUEST_KEYS}
 
-        return AnnotatedLLMRequest(
-            messages,
+        alr = AnnotatedLLMRequest(
+            annotated_messages,
             model=model if isinstance(model, str) else None,
             tools=tools if isinstance(tools, list) else None,
             tool_choice=tool_choice if isinstance(tool_choice, str | dict) else None,
             extra=extra or None,
         )
+        return alr
 
     def encode(self, annotated: AnnotatedLLMRequest, original: LLMRequest) -> LLMRequest:
         """Encode annotated request edits back into a LangChain-shaped payload."""
@@ -224,12 +189,14 @@ def lc_model_request_to_relay_llm_request(model_name: str | None, request: Model
 
     # BaseMessage.content_blocks is a list, wrap these in a dict, to preserve the boundary between messages.
     messages: list[JsonObject] = []
-    if request.system_message is not None and request.system_message.content_blocks is not None:
-        messages.append({"content_blocks": request.system_message.content_blocks})
+    if request.system_message is not None:
+        sm = request.system_message
+        if sm.content_blocks is not None:
+            messages.append({"type": sm.type, "content_blocks": sm.content_blocks})
 
     for msg in request.messages:
         if msg.content_blocks is not None:
-            messages.append({"content_blocks": msg.content_blocks})
+            messages.append({"type": msg.type, "content_blocks": msg.content_blocks})
 
     payload = {
         "messages": messages,
