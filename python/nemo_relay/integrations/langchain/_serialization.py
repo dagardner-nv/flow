@@ -221,18 +221,17 @@ def lc_model_request_to_relay_llm_request(model_name: str | None, request: Model
     """
     Serialize a LangChain ``ModelRequest`` instance into a NeMo Relay ``LLMRequest``.
     """
-    messages: list[BaseMessage] = []
-    content_blocks: list[JsonObject] = []
-    if request.system_message is not None:
-        messages.append(request.system_message)
-        content_blocks.extend(request.system_message.content_blocks)
 
-    messages.extend(request.messages)
+    # BaseMessage.content_blocks is a list, wrap these in a dict, to preserve the boundary between messages.
+    messages: list[JsonObject] = []
+    if request.system_message is not None:
+        messages.append({"content_blocks": request.system_message.content_blocks})
+
     for msg in request.messages:
-        content_blocks.extend(msg.content_blocks)
+        messages.append({"content_blocks": msg.content_blocks})
 
     payload = {
-        "messages": messages_to_dict(messages),
+        "messages": messages,
     }
     if model_name:
         payload["model"] = model_name
