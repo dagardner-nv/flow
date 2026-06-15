@@ -14,7 +14,7 @@ import nemo_relay
 from nemo_relay.integrations.langchain._serialization import (
     LangChainCodec,
     get_model_name,
-    model_request_to_payload,
+    lc_model_request_to_relay_llm_request,
     model_response_from_json,
     model_response_to_json,
     payload_to_model_request,
@@ -58,7 +58,7 @@ class NemoRelayMiddleware(AgentMiddleware):
         """Boilerplate code common to both wrap_model_call and awrap_model_call"""
         object_codec = nemo_relay.typed.BestEffortAnyCodec()
         model_name = get_model_name(request.model)
-        llm_request = nemo_relay.LLMRequest({}, model_request_to_payload(model_name, request))
+        llm_request = lc_model_request_to_relay_llm_request(model_name, request)
         model_codec = LangChainCodec()
         return _ModelCallValues(object_codec, llm_request, model_name, model_codec)
 

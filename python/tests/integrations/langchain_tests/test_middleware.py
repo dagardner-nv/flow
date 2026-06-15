@@ -222,12 +222,12 @@ def test_awrap_model_call_routes_through_llm_execute(
 def test_langchain_model_request_codec_round_trips_messages(model_request: ModelRequest[Any]):
     from nemo_relay.integrations.langchain._serialization import (
         LangChainCodec,
-        model_request_to_payload,
+        lc_model_request_to_relay_llm_request,
         payload_to_model_request,
     )
 
     codec = LangChainCodec()
-    request = nemo_relay.LLMRequest({}, model_request_to_payload("mock-model", model_request))
+    request = lc_model_request_to_relay_llm_request("mock-model", model_request)
 
     annotated = codec.decode(request)
     assert annotated.messages == [{"role": "user", "content": "hello"}]
