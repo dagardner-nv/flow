@@ -224,11 +224,12 @@ def lc_model_request_to_relay_llm_request(model_name: str | None, request: Model
 
     # BaseMessage.content_blocks is a list, wrap these in a dict, to preserve the boundary between messages.
     messages: list[JsonObject] = []
-    if request.system_message is not None:
+    if request.system_message is not None and request.system_message.content_blocks is not None:
         messages.append({"content_blocks": request.system_message.content_blocks})
 
     for msg in request.messages:
-        messages.append({"content_blocks": msg.content_blocks})
+        if msg.content_blocks is not None:
+            messages.append({"content_blocks": msg.content_blocks})
 
     payload = {
         "messages": messages,
