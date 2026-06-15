@@ -26,8 +26,6 @@ if TYPE_CHECKING:
     from langchain_core.messages import ToolMessage
     from langgraph.types import Command
 
-    from nemo_relay.codecs import LlmCodec, LlmResponseCodec
-
 
 class NemoRelayMiddleware(AgentMiddleware):
     """Route LangChain agent model and tool calls through NeMo Relay.
@@ -49,24 +47,6 @@ class NemoRelayMiddleware(AgentMiddleware):
         """Middleware name used by LangChain graph nodes and traces."""
         return self._name
 
-    async def _llm_execute(
-        self,
-        model_name: str,
-        request: nemo_relay.LLMRequest,
-        codec: LlmCodec | None,
-        response_codec: LlmResponseCodec | None,
-        func: Callable[..., Any],
-    ) -> Any:
-        """Execute a non-streaming LLM call through the NeMo Relay pipeline."""
-        return await nemo_relay.llm.execute(
-            model_name,
-            request,
-            func,
-            model_name=model_name,
-            codec=codec,
-            response_codec=response_codec,
-        )
-
     def _prepare_model_call(self, request: ModelRequest[Any]) -> tuple:
         """Boilerplate code common to both wrap_model_call and awrap_model_call"""
         object_codec = nemo_relay.typed.BestEffortAnyCodec()
@@ -87,15 +67,18 @@ class NemoRelayMiddleware(AgentMiddleware):
             response = handler(payload_to_model_request(request, req))
             return model_response_to_json(response, object_codec)
 
-        result = run_sync(
-            self._llm_execute(
+        async def _execute() -> Any:
+            # Wrapper to ensure nemo_relay.llm.execute isn't called until we are inside an asyncio loop
+            return await nemo_relay.llm.execute(
+                model_name,
+                llm_request,
+                _call,
                 model_name=model_name,
-                request=llm_request,
-                func=_call,
                 codec=model_codec,
                 response_codec=model_codec,
             )
-        )
+
+        result = run_sync(_execute())
         return model_response_from_json(result, object_codec)
 
     async def awrap_model_call(
@@ -110,10 +93,11 @@ class NemoRelayMiddleware(AgentMiddleware):
             response = await handler(payload_to_model_request(request, req))
             return model_response_to_json(response, object_codec)
 
-        result = await self._llm_execute(
+        result = await nemo_relay.llm.execute(
+            model_name,
+            llm_request,
+            _call,
             model_name=model_name,
-            request=llm_request,
-            func=_call,
             codec=model_codec,
             response_codec=model_codec,
         )

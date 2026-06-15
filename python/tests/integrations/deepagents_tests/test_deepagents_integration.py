@@ -212,6 +212,7 @@ def test_before_agent_emits_configuration_mark(
 @pytest.mark.parametrize("use_async", [False, True])
 def test_model_call_routes_through_langchain_execution_middleware(
     use_async: bool,
+    monkeypatch: pytest.MonkeyPatch,
     deepagents_integration_module: types.ModuleType,
 ):
     from langchain.agents.middleware import ModelRequest, ModelResponse
@@ -219,37 +220,25 @@ def test_model_call_routes_through_langchain_execution_middleware(
 
     from nemo_relay.integrations.langchain._serialization import LangChainCodec
 
-    class _RecordingMiddleware(deepagents_integration_module.NemoRelayDeepAgentsMiddleware):
-        def __init__(self):
-            super().__init__()
-            self.calls: list[dict[str, Any]] = []
+    async def execute_side_effect(
+        name: str,
+        request: nemo_relay.LLMRequest,
+        func: Any,
+        **_kwargs: Any,
+    ) -> Any:
+        intercepted = nemo_relay.LLMRequest(
+            request.headers,
+            {
+                **request.content,
+                "model_settings": {"temperature": 0.25},
+            },
+        )
+        return await func(intercepted)
 
-        async def _llm_execute(
-            self,
-            model_name: str,
-            request: nemo_relay.LLMRequest,
-            codec: Any,
-            response_codec: Any,
-            func: Any,
-        ) -> Any:
-            self.calls.append(
-                {
-                    "model_name": model_name,
-                    "request": request,
-                    "codec": codec,
-                    "response_codec": response_codec,
-                }
-            )
-            intercepted = nemo_relay.LLMRequest(
-                request.headers,
-                {
-                    **request.content,
-                    "model_settings": {"temperature": 0.25},
-                },
-            )
-            return await func(intercepted)
+    mock_llm_execute = AsyncMock(side_effect=execute_side_effect)
+    monkeypatch.setattr(nemo_relay.llm, "execute", mock_llm_execute)
 
-    middleware = _RecordingMiddleware()
+    middleware = deepagents_integration_module.NemoRelayDeepAgentsMiddleware()
     request = ModelRequest(
         model=_mock_deepagents_chat_model([AIMessage(content="unused")]),
         messages=[HumanMessage(content="hello")],
@@ -271,9 +260,15 @@ def test_model_call_routes_through_langchain_execution_middleware(
 
     assert response.result[0].content == "done"
     assert seen_request["request"].model_settings == {"temperature": 0.25}
-    assert middleware.calls[0]["model_name"] == "mock-model"
-    assert isinstance(middleware.calls[0]["codec"], LangChainCodec)
-    assert middleware.calls[0]["response_codec"] is middleware.calls[0]["codec"]
+    mock_llm_execute.assert_awaited_once()
+    assert mock_llm_execute.await_args is not None
+    args = mock_llm_execute.await_args.args
+    kwargs = mock_llm_execute.await_args.kwargs
+    assert args[0] == "mock-model"
+    assert args[1].content["model"] == "mock-model"
+    assert kwargs["model_name"] == "mock-model"
+    assert isinstance(kwargs["codec"], LangChainCodec)
+    assert kwargs["response_codec"] is kwargs["codec"]
 
 
 @pytest.mark.parametrize("use_async", [False, True])

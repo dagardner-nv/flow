@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -88,6 +88,26 @@ def mock_tool_execute_fixture() -> AsyncMock:
     return AsyncMock(side_effect=execute_side_effect)
 
 
+@pytest.fixture(name="mock_llm_execute")
+def mock_llm_execute_fixture() -> AsyncMock:
+    async def execute_side_effect(
+        name: str,
+        request: nemo_relay.LLMRequest,
+        func: Callable[[nemo_relay.LLMRequest], Awaitable[Any]],
+        **_kwargs: Any,
+    ) -> Any:
+        intercepted = nemo_relay.LLMRequest(
+            request.headers,
+            {
+                **request.content,
+                "model_settings": {"temperature": 0.25},
+            },
+        )
+        return await func(intercepted)
+
+    return AsyncMock(side_effect=execute_side_effect)
+
+
 def _mk_mock_model(returned_message: str | list[AIMessage] = _DEFAULT_MOCK_RESPONSE_MSG) -> MagicMock:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AIMessage
@@ -113,49 +133,6 @@ def nemo_relay_middleware_fixture() -> NemoRelayMiddleware:
     from nemo_relay.integrations.langchain.middleware import NemoRelayMiddleware
 
     return NemoRelayMiddleware()
-
-
-class RecordingMiddleware(Protocol):
-    calls: list[dict[str, Any]]
-    wrap_model_call: Callable
-    awrap_model_call: Callable
-
-
-@pytest.fixture(name="recording_middleware")
-def recording_middleware_fixture() -> RecordingMiddleware:
-    from nemo_relay.integrations.langchain.middleware import NemoRelayMiddleware
-
-    class _RecordingMiddleware(NemoRelayMiddleware, RecordingMiddleware):
-        def __init__(self):
-            super().__init__()
-            self.calls: list[dict[str, Any]] = []
-
-        async def _llm_execute(
-            self,
-            model_name: str,
-            request: nemo_relay.LLMRequest,
-            codec: Any,
-            response_codec: Any,
-            func: Any,
-        ) -> Any:
-            self.calls.append(
-                {
-                    "model_name": model_name,
-                    "request": request,
-                    "codec": codec,
-                    "response_codec": response_codec,
-                }
-            )
-            intercepted = nemo_relay.LLMRequest(
-                request.headers,
-                {
-                    **request.content,
-                    "model_settings": {"temperature": 0.25},
-                },
-            )
-            return await func(intercepted)
-
-    return _RecordingMiddleware()
 
 
 @pytest.fixture(name="model_request")
@@ -185,43 +162,61 @@ def tool_call_request_fixture() -> ToolCallRequest:
 
 
 def test_wrap_model_call_routes_through_llm_execute(
+    monkeypatch: pytest.MonkeyPatch,
+    nemo_relay_middleware: NemoRelayMiddleware,
+    mock_llm_execute: AsyncMock,
     model_request: ModelRequest[Any],
     model_request_handler: tuple[Callable[[ModelRequest[Any]], ModelResponse[Any]], dict[str, ModelRequest[Any]]],
-    recording_middleware: RecordingMiddleware,
 ):
     (handler, seen_request) = model_request_handler
 
-    response = recording_middleware.wrap_model_call(model_request, handler)
+    monkeypatch.setattr(nemo_relay.llm, "execute", mock_llm_execute)
+
+    response = nemo_relay_middleware.wrap_model_call(model_request, handler)
 
     assert response.result[0].content == "done"
     assert seen_request["request"].model_settings == {"temperature": 0.25}
-    assert recording_middleware.calls[0]["model_name"] == "mock-model"
-    assert recording_middleware.calls[0]["request"].content["model"] == "mock-model"
+    mock_llm_execute.assert_awaited_once()
+    assert mock_llm_execute.await_args is not None
+    args = mock_llm_execute.await_args.args
+    kwargs = mock_llm_execute.await_args.kwargs
+    assert args[0] == "mock-model"
+    assert args[1].content["model"] == "mock-model"
+    assert kwargs["model_name"] == "mock-model"
     from nemo_relay.integrations.langchain._serialization import LangChainCodec
 
-    assert isinstance(recording_middleware.calls[0]["codec"], LangChainCodec)
-    assert recording_middleware.calls[0]["response_codec"] is recording_middleware.calls[0]["codec"]
+    assert isinstance(kwargs["codec"], LangChainCodec)
+    assert kwargs["response_codec"] is kwargs["codec"]
 
 
 def test_awrap_model_call_routes_through_llm_execute(
+    monkeypatch: pytest.MonkeyPatch,
+    nemo_relay_middleware: NemoRelayMiddleware,
+    mock_llm_execute: AsyncMock,
     model_request: ModelRequest[Any],
     async_model_request_handler: tuple[
         Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]], dict[str, ModelRequest[Any]]
     ],
-    recording_middleware: RecordingMiddleware,
 ):
     (handler, seen_request) = async_model_request_handler
 
-    response = asyncio.run(recording_middleware.awrap_model_call(model_request, handler))
+    monkeypatch.setattr(nemo_relay.llm, "execute", mock_llm_execute)
+
+    response = asyncio.run(nemo_relay_middleware.awrap_model_call(model_request, handler))
 
     assert response.result[0].content == "done"
     assert seen_request["request"].model_settings == {"temperature": 0.25}
-    assert recording_middleware.calls[0]["model_name"] == "mock-model"
-    assert recording_middleware.calls[0]["request"].content["model"] == "mock-model"
+    mock_llm_execute.assert_awaited_once()
+    assert mock_llm_execute.await_args is not None
+    args = mock_llm_execute.await_args.args
+    kwargs = mock_llm_execute.await_args.kwargs
+    assert args[0] == "mock-model"
+    assert args[1].content["model"] == "mock-model"
+    assert kwargs["model_name"] == "mock-model"
     from nemo_relay.integrations.langchain._serialization import LangChainCodec
 
-    assert isinstance(recording_middleware.calls[0]["codec"], LangChainCodec)
-    assert recording_middleware.calls[0]["response_codec"] is recording_middleware.calls[0]["codec"]
+    assert isinstance(kwargs["codec"], LangChainCodec)
+    assert kwargs["response_codec"] is kwargs["codec"]
 
 
 def test_langchain_model_request_codec_round_trips_messages(model_request: ModelRequest[Any]):
