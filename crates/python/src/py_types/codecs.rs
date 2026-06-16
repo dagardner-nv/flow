@@ -57,6 +57,7 @@ fn optional_json_getter(py: Python<'_>, value: &Option<serde_json::Value>) -> Py
     }
 }
 
+// TODO: REVERT THIS
 fn rejected_value_repr(value: &Bound<'_, PyAny>) -> String {
     value
         .repr()

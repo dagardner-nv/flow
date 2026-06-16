@@ -135,7 +135,7 @@ pub enum MessageContent {
 
 /// A single content part within a multimodal message.
 ///
-/// Supported parts include text, reasoning, and image URLs.
+/// Supported parts include text, reasoning, tool calls, and image URLs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
@@ -148,6 +148,16 @@ pub enum ContentPart {
     Reasoning {
         /// The reasoning content.
         reasoning: String,
+    },
+    /// A tool call content part.
+    #[serde(rename = "tool_call")]
+    ToolCallPart {
+        /// Unique identifier for this tool call.
+        id: String,
+        /// The function/tool name to call.
+        name: String,
+        /// Tool arguments.
+        args: Json,
     },
     /// An image URL content part.
     ImageUrl {
@@ -276,6 +286,7 @@ impl AnnotatedLlmRequest {
                 MessageContent::Parts(parts) => parts.iter().find_map(|p| match p {
                     ContentPart::Text { text } => Some(text.as_str()),
                     ContentPart::Reasoning { .. } => None,
+                    ContentPart::ToolCallPart { .. } => None,
                     ContentPart::ImageUrl { .. } => None,
                 }),
             },
@@ -295,6 +306,7 @@ impl AnnotatedLlmRequest {
                 MessageContent::Parts(parts) => parts.iter().find_map(|p| match p {
                     ContentPart::Text { text } => Some(text.as_str()),
                     ContentPart::Reasoning { .. } => None,
+                    ContentPart::ToolCallPart { .. } => None,
                     ContentPart::ImageUrl { .. } => None,
                 }),
             },

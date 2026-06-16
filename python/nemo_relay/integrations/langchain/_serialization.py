@@ -95,8 +95,8 @@ class LangChainCodec(LlmCodec):
                             "arguments": json.dumps(block.get("args", {}))
                         }
                     })
-                else:
-                    content.append(block)
+
+                content.append(block)
 
             am["content"] = content
             if tool_calls:
