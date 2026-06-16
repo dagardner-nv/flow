@@ -202,12 +202,6 @@ class LangChainCodec(LlmCodec):
         )
         return alr
 
-def split_system_message(messages: list[BaseMessage]) -> tuple[SystemMessage | None, list[BaseMessage]]:
-    """Split a leading system message into LangChain agent ``ModelRequest`` shape."""
-    if messages and isinstance(messages[0], SystemMessage):
-        return messages[0], messages[1:]
-    return None, messages
-
 def _relay_message_to_lc_message(message: JsonObject) -> BaseMessage:
     """Convert a NeMo Relay message dict to a LangChain `BaseMessage`."""
     type_ = message["type"]
@@ -261,6 +255,17 @@ def _relay_messages_to_lc_messages(
 
     return system_message, lc_messages
 
+def _lc_messages_to_json(messages: list[BaseMessage]) -> list[JsonObject]:
+    json_messages: list[JsonObject] = []
+    for msg in messages:
+        jm = {"type": msg.type, "content_blocks": msg.content_blocks}
+        if msg.type == "tool":
+            jm["tool_call_id"] = getattr(msg, "tool_call_id", "")
+
+        json_messages.append(jm)
+
+    return json_messages
+
 def lc_model_request_to_relay_llm_request(model_name: str | None, request: ModelRequest[Any]) -> LLMRequest:
     """
     Serialize a LangChain ``ModelRequest`` instance into a NeMo Relay ``LLMRequest``.
@@ -282,7 +287,6 @@ def lc_model_request_to_relay_llm_request(model_name: str | None, request: Model
     if request.response_format is not None:
         payload["response_format"] = repr(request.response_format)
     return LLMRequest({}, payload)
-
 
 def payload_to_model_request(
     lc_request: ModelRequest[Any],
@@ -325,17 +329,6 @@ def payload_to_model_request(
 
     return lc_request.override(**overrides) if overrides else lc_request
 
-
-def _lc_messages_to_json(messages: list[BaseMessage]) -> list[JsonObject]:
-    json_messages: list[JsonObject] = []
-    for msg in messages:
-        jm = {"type": msg.type, "content_blocks": msg.content_blocks}
-        if msg.type == "tool":
-            jm["tool_call_id"] = getattr(msg, "tool_call_id", "")
-
-        json_messages.append(jm)
-
-    return json_messages
 
 def _model_response_payload(response: ModelResponse[Any], codec: Any) -> dict[str, Any]:
     messages: list[JsonObject] = _lc_messages_to_json(response.result)
