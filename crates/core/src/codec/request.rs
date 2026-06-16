@@ -135,7 +135,7 @@ pub enum MessageContent {
 
 /// A single content part within a multimodal message.
 ///
-/// v1 supports text only. Future versions may add `ImageUrl`, `Audio`, etc.
+/// Supported parts include text, reasoning, and image URLs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
@@ -143,6 +143,11 @@ pub enum ContentPart {
     Text {
         /// The text content.
         text: String,
+    },
+    /// A reasoning content part.
+    Reasoning {
+        /// The reasoning content.
+        reasoning: String,
     },
     /// An image URL content part.
     ImageUrl {
@@ -270,6 +275,7 @@ impl AnnotatedLlmRequest {
                 MessageContent::Text(s) => Some(s.as_str()),
                 MessageContent::Parts(parts) => parts.iter().find_map(|p| match p {
                     ContentPart::Text { text } => Some(text.as_str()),
+                    ContentPart::Reasoning { .. } => None,
                     ContentPart::ImageUrl { .. } => None,
                 }),
             },
@@ -288,6 +294,7 @@ impl AnnotatedLlmRequest {
                 MessageContent::Text(s) => Some(s.as_str()),
                 MessageContent::Parts(parts) => parts.iter().find_map(|p| match p {
                     ContentPart::Text { text } => Some(text.as_str()),
+                    ContentPart::Reasoning { .. } => None,
                     ContentPart::ImageUrl { .. } => None,
                 }),
             },

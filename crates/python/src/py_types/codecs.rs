@@ -57,6 +57,37 @@ fn optional_json_getter(py: Python<'_>, value: &Option<serde_json::Value>) -> Py
     }
 }
 
+fn rejected_value_repr(value: &Bound<'_, PyAny>) -> String {
+    value
+        .repr()
+        .and_then(|repr| repr.extract::<String>())
+        .unwrap_or_else(|_| "<unrepresentable>".to_string())
+}
+
+fn rejected_message_entries_repr(value: &Bound<'_, PyAny>) -> String {
+    let Ok(messages) = value.cast::<pyo3::types::PyList>() else {
+        return "messages value is not a list".to_string();
+    };
+
+    let rejected = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| match pythonize::depythonize::<Message>(&item) {
+            Ok(_) => None,
+            Err(e) => Some(format!(
+                "messages[{index}]={}: {e}",
+                rejected_value_repr(&item)
+            )),
+        })
+        .collect::<Vec<_>>();
+
+    if rejected.is_empty() {
+        "unable to isolate invalid message entries".to_string()
+    } else {
+        rejected.join("; ")
+    }
+}
+
 fn optional_json_setter(
     target: &mut Option<serde_json::Value>,
     value: &Bound<'_, PyAny>,
@@ -95,7 +126,8 @@ impl PyAnnotatedLLMRequest {
     ) -> PyResult<Self> {
         let msgs: Vec<Message> = pythonize::depythonize(messages).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!(
-                "invalid messages: each dict must include a 'role' key (user/system/assistant/tool): {e}"
+                "invalid messages: each dict must include a 'role' key (user/system/assistant/tool); rejected entries: {}; {e}",
+                rejected_message_entries_repr(messages)
             ))
         })?;
         let gen_params: Option<GenerationParams> = match params {
@@ -164,7 +196,8 @@ impl PyAnnotatedLLMRequest {
     pub(crate) fn set_messages(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
         self.inner.messages = pythonize::depythonize(value).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!(
-                "invalid messages: each dict must include a 'role' key (user/system/assistant/tool): {e}"
+                "invalid messages: each dict must include a 'role' key (user/system/assistant/tool); rejected entries: {}; {e}",
+                rejected_message_entries_repr(value)
             ))
         })?;
         Ok(())

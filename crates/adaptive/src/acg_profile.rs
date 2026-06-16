@@ -190,6 +190,7 @@ fn extract_text(content: &MessageContent) -> String {
             .iter()
             .map(|part| match part {
                 ContentPart::Text { text } => text.clone(),
+                ContentPart::Reasoning { .. } => "[reasoning]".to_string(),
                 ContentPart::ImageUrl { image_url } => format!(
                     "[image:{}:{}]",
                     image_url.detail.as_deref().unwrap_or("none"),

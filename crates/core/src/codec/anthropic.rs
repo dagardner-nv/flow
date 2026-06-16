@@ -214,6 +214,7 @@ fn extract_system_text(msg: &Message) -> Option<String> {
                 .iter()
                 .filter_map(|p| match p {
                     super::request::ContentPart::Text { text } => Some(text.as_str()),
+                    super::request::ContentPart::Reasoning { .. } => None,
                     super::request::ContentPart::ImageUrl { .. } => None,
                 })
                 .collect();

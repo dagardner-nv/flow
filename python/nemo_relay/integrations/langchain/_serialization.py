@@ -71,80 +71,6 @@ def get_model_name(model: Any) -> str | None:
 class LangChainCodec(LlmCodec):
     """Translate LangChain ``ModelRequest`` payloads for request intercepts."""
 
-    @classmethod
-    def _langchain_tool_calls_to_annotated(cls, tool_calls: list[Any]) -> list[dict[str, Any]]:
-        annotated_tool_calls = []
-        for tool_call in tool_calls:
-            args = tool_call["args"]
-            arguments = args if isinstance(args, str) else json.dumps(args)
-            annotated_tool_calls.append(
-                {
-                    "id": tool_call.get("id") or "",
-                    "type": "function",
-                    "function": {
-                        "name": tool_call["name"],
-                        "arguments": arguments,
-                    },
-                }
-            )
-
-        return annotated_tool_calls
-
-    @classmethod
-    def _annotated_tool_calls_to_langchain(cls, tool_calls: Any) -> list[dict[str, Any]] | None:
-        if not isinstance(tool_calls, list) or not tool_calls:
-            return None
-
-        langchain_tool_calls = []
-        for tool_call in tool_calls:
-            if not isinstance(tool_call, dict):
-                continue
-            function = tool_call.get("function")
-            if isinstance(function, dict):
-                name = str(function.get("name") or "")
-                arguments = function.get("arguments", {})
-            else:
-                name = str(tool_call.get("name") or "")
-                arguments = tool_call.get("args", {})
-
-            if isinstance(arguments, str):
-                try:
-                    args = json.loads(arguments)
-                except json.JSONDecodeError:
-                    args = {"arguments": arguments}
-            elif isinstance(arguments, dict):
-                args = arguments
-            else:
-                args = {}
-
-            langchain_tool_calls.append(
-                {
-                    "name": name,
-                    "args": args,
-                    "id": str(tool_call.get("id") or ""),
-                    "type": "tool_call",
-                }
-            )
-
-        return langchain_tool_calls or None
-
-    @classmethod
-    def _annotated_message_to_langchain(cls, message: dict[str, Any]) -> BaseMessage:
-        role = message.get("role")
-        content = message.get("content", "")
-        name = message.get("name")
-
-        if role == "system":
-            return SystemMessage(content=content, name=name)
-        if role == "user":
-            return HumanMessage(content=content, name=name)
-        if role == "assistant":
-            tool_calls = cls._annotated_tool_calls_to_langchain(message.get("tool_calls"))
-            return AIMessage(content=content, name=name, tool_calls=tool_calls or [])
-        if role == "tool":
-            return ToolMessage(content=content, name=name, tool_call_id=str(message.get("tool_call_id") or ""))
-        raise ValueError(f"Unsupported annotated LangChain message role: {role!r}")
-
     def decode(self, request: LLMRequest) -> AnnotatedLLMRequest:
         """Decode a LangChain-shaped request payload into an annotated request."""
         payload = request.content
@@ -153,7 +79,30 @@ class LangChainCodec(LlmCodec):
         for message in messages:
             msg_type = message["type"]
             role = _LC_TO_RELAY_MESSAGE_ROLE.get(msg_type, msg_type)
-            annotated_messages.append({"role": role, "content": message["content_blocks"]})
+            content = []
+            tool_calls = []
+            am = {"role": role}
+            if role == "tool":
+                am["tool_call_id"] = str(message.get("tool_call_id") or "")
+
+            for block in message["content_blocks"]:
+                if block["type"] == "tool_call":
+                    tool_calls.append({
+                        "id": str(block.get("id") or ""),
+                        "type": "function",
+                        "function": {
+                            "name": block["name"],
+                            "arguments": json.dumps(block.get("args", {}))
+                        }
+                    })
+                else:
+                    content.append(block)
+
+            am["content"] = content
+            if tool_calls:
+                am["tool_calls"] = tool_calls
+
+            annotated_messages.append(am)
 
         model = payload.get("model")
         tools = payload.get("tools")
@@ -316,17 +265,12 @@ def lc_model_request_to_relay_llm_request(model_name: str | None, request: Model
     """
     Serialize a LangChain ``ModelRequest`` instance into a NeMo Relay ``LLMRequest``.
     """
-
-    # BaseMessage.content_blocks is a list, wrap these in a dict, to preserve the boundary between messages.
-    messages: list[JsonObject] = []
+    lc_messages = []
     if request.system_message is not None:
-        sm = request.system_message
-        if sm.content_blocks is not None:
-            messages.append({"type": sm.type, "content_blocks": sm.content_blocks})
+        lc_messages.append(request.system_message)
 
-    for msg in request.messages:
-        if msg.content_blocks is not None:
-            messages.append({"type": msg.type, "content_blocks": msg.content_blocks})
+    lc_messages.extend(request.messages)
+    messages = _lc_messages_to_json(lc_messages)
 
     payload = {
         "messages": messages,
@@ -382,11 +326,19 @@ def payload_to_model_request(
     return lc_request.override(**overrides) if overrides else lc_request
 
 
+def _lc_messages_to_json(messages: list[BaseMessage]) -> list[JsonObject]:
+    json_messages: list[JsonObject] = []
+    for msg in messages:
+        jm = {"type": msg.type, "content_blocks": msg.content_blocks}
+        if msg.type == "tool":
+            jm["tool_call_id"] = getattr(msg, "tool_call_id", "")
+
+        json_messages.append(jm)
+
+    return json_messages
+
 def _model_response_payload(response: ModelResponse[Any], codec: Any) -> dict[str, Any]:
-    messages: list[JsonObject] = []
-    for msg in response.result:
-        if msg.content_blocks is not None:
-            messages.append({"type": msg.type, "content_blocks": msg.content_blocks})
+    messages: list[JsonObject] = _lc_messages_to_json(response.result)
 
     payload: JsonObject = {
         "messages": messages,

@@ -300,6 +300,7 @@ fn annotated_message_text(message: Option<&MessageContent>) -> Option<String> {
                 .iter()
                 .filter_map(|part| match part {
                     ContentPart::Text { text } => Some(text.as_str()),
+                    ContentPart::Reasoning { .. } => None,
                     ContentPart::ImageUrl { .. } => None,
                 })
                 .collect();

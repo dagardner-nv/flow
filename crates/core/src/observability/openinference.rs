@@ -925,6 +925,7 @@ fn message_content_text(content: &MessageContent) -> Option<String> {
                 .iter()
                 .filter_map(|part| match part {
                     ContentPart::Text { text } => Some(text.as_str()),
+                    ContentPart::Reasoning { .. } => None,
                     ContentPart::ImageUrl { .. } => None,
                 })
                 .collect::<Vec<_>>()
