@@ -47,6 +47,7 @@ _LC_TO_RELAY_MESSAGE_ROLE = {
 }
 _RELAY_MESSAGE_ROLES_WITH_NAME = {"system", "user", "assistant"}
 _LC_MESSAGE_TYPES_WITH_NAME = {"system", "human", "ai"}
+_LC_RESPONSE_MESSAGE_FIELD_KEYS = ("id", "response_metadata", "usage_metadata")
 
 _RELAY_ROLE_TO_LC_MESSAGE_TYPE = {v: k for k, v in _LC_TO_RELAY_MESSAGE_ROLE.items()}
 
@@ -167,12 +168,25 @@ class LangChainCodec(LlmCodec):
 
         content_blocks = last_ai_message["content_blocks"]
 
-        msg_id = None
+        msg_id = last_ai_message.get("id")
+        if not isinstance(msg_id, str):
+            msg_id = None
         tool_calls = []
         model_name = None
-        finish_reason = None
-        usage = None
+        finish_reason = _message_finish_reason(last_ai_message)
+        usage = _message_usage(last_ai_message)
         message_text = None
+
+        for metadata in (last_ai_message.get("response_metadata"), last_ai_message):
+            if not isinstance(metadata, dict):
+                continue
+            for key in ("model_name", "model", "model_id"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value:
+                    model_name = value
+                    break
+            if model_name is not None:
+                break
 
         for block in reversed(content_blocks):
             if msg_id is None:
@@ -217,21 +231,44 @@ class LangChainCodec(LlmCodec):
         )
         return alr
 
-def _lc_message_name_kwargs(message: JsonObject) -> dict[str, str]:
+def _lc_message_kwargs(
+    message: JsonObject,
+    *,
+    include_response_fields: bool = False,
+    include_usage_metadata: bool = False,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
     name = message.get("name")
     if isinstance(name, str):
-        return {"name": name}
-    return {}
+        kwargs["name"] = name
+    if include_response_fields:
+        msg_id = message.get("id")
+        if isinstance(msg_id, str):
+            kwargs["id"] = msg_id
+        response_metadata = message.get("response_metadata")
+        if isinstance(response_metadata, dict):
+            kwargs["response_metadata"] = response_metadata
+        usage_metadata = message.get("usage_metadata")
+        if include_usage_metadata and isinstance(usage_metadata, dict):
+            kwargs["usage_metadata"] = usage_metadata
+    return kwargs
 
-def _relay_message_to_lc_message(message: JsonObject) -> BaseMessage:
+def _relay_message_to_lc_message(message: JsonObject, *, include_response_fields: bool = False) -> BaseMessage:
     """Convert a NeMo Relay message dict to a LangChain `BaseMessage`."""
     type_ = message["type"]
     if type_ == "human":
-        return HumanMessage(content_blocks=message["content_blocks"], **_lc_message_name_kwargs(message))
+        return HumanMessage(content_blocks=message["content_blocks"], **_lc_message_kwargs(message))
     if type_ == "ai":
-        return AIMessage(content_blocks=message["content_blocks"], **_lc_message_name_kwargs(message))
+        return AIMessage(
+            content_blocks=message["content_blocks"],
+            **_lc_message_kwargs(
+                message,
+                include_response_fields=include_response_fields,
+                include_usage_metadata=True,
+            ),
+        )
     if type_ == "system":
-        return SystemMessage(content_blocks=message["content_blocks"], **_lc_message_name_kwargs(message))
+        return SystemMessage(content_blocks=message["content_blocks"], **_lc_message_kwargs(message))
     if type_ == "chat":
         return ChatMessage(content_blocks=message["content_blocks"])
     if type_ == "function":
@@ -257,7 +294,8 @@ def _relay_message_to_lc_message(message: JsonObject) -> BaseMessage:
 
 def _relay_messages_to_lc_messages(
         relay_messages: list[JsonObject],
-        extract_system_message: bool) -> tuple[SystemMessage | None, list[BaseMessage]]:
+        extract_system_message: bool,
+        include_response_fields: bool = False) -> tuple[SystemMessage | None, list[BaseMessage]]:
     """
     Convert a list of NeMo Relay message dicts to a list of LangChain `BaseMessage`s.
     when extract_system_message is True, the first system message encountered will be returned separately.
@@ -266,7 +304,7 @@ def _relay_messages_to_lc_messages(
     system_message: SystemMessage | None = None
     for message in relay_messages:
         try:
-            lc_message = _relay_message_to_lc_message(message)
+            lc_message = _relay_message_to_lc_message(message, include_response_fields=include_response_fields)
             if extract_system_message and system_message is None and isinstance(lc_message, SystemMessage):
                 system_message = lc_message
             else:
@@ -276,13 +314,20 @@ def _relay_messages_to_lc_messages(
 
     return system_message, lc_messages
 
-def _lc_messages_to_json(messages: list[BaseMessage]) -> list[JsonObject]:
+def _lc_messages_to_json(messages: list[BaseMessage], *, include_response_fields: bool = False) -> list[JsonObject]:
     json_messages: list[JsonObject] = []
     for msg in messages:
         jm = {"type": msg.type, "content_blocks": msg.content_blocks}
         name = getattr(msg, "name", None)
         if msg.type in _LC_MESSAGE_TYPES_WITH_NAME and isinstance(name, str):
             jm["name"] = name
+        if include_response_fields:
+            for key in _LC_RESPONSE_MESSAGE_FIELD_KEYS:
+                value = getattr(msg, key, None)
+                if isinstance(value, dict) and not value:
+                    continue
+                if value is not None:
+                    jm[key] = value
         if msg.type == "tool":
             jm["tool_call_id"] = getattr(msg, "tool_call_id", "")
 
@@ -355,7 +400,7 @@ def payload_to_model_request(
 
 
 def _model_response_payload(response: ModelResponse[Any], codec: Any) -> dict[str, Any]:
-    messages: list[JsonObject] = _lc_messages_to_json(response.result)
+    messages: list[JsonObject] = _lc_messages_to_json(response.result, include_response_fields=True)
 
     payload: JsonObject = {
         "messages": messages,
@@ -387,7 +432,11 @@ def _model_response_from_payload(payload: Any, codec: Any) -> ModelResponse[Any]
     if not isinstance(raw_messages, list):
         return None
 
-    _, lc_messages = _relay_messages_to_lc_messages(raw_messages, extract_system_message=False)
+    _, lc_messages = _relay_messages_to_lc_messages(
+        raw_messages,
+        extract_system_message=False,
+        include_response_fields=True,
+    )
 
     structured_response = None
     if "structured_response" in payload:
