@@ -45,6 +45,8 @@ _LC_TO_RELAY_MESSAGE_ROLE = {
     "human": "user",
     "ai": "assistant",
 }
+_RELAY_MESSAGE_ROLES_WITH_NAME = {"system", "user", "assistant"}
+_LC_MESSAGE_TYPES_WITH_NAME = {"system", "human", "ai"}
 
 _RELAY_ROLE_TO_LC_MESSAGE_TYPE = {v: k for k, v in _LC_TO_RELAY_MESSAGE_ROLE.items()}
 
@@ -82,6 +84,9 @@ class LangChainCodec(LlmCodec):
             content = []
             tool_calls = []
             am = {"role": role}
+            name = message.get("name")
+            if role in _RELAY_MESSAGE_ROLES_WITH_NAME and isinstance(name, str):
+                am["name"] = name
             if role == "tool":
                 am["tool_call_id"] = str(message.get("tool_call_id") or "")
 
@@ -128,6 +133,9 @@ class LangChainCodec(LlmCodec):
             role = message["role"]
             msg_type = _RELAY_ROLE_TO_LC_MESSAGE_TYPE.get(role, role)
             encoded_message = {"type": msg_type, "content_blocks": message["content"]}
+            name = message.get("name")
+            if role in _RELAY_MESSAGE_ROLES_WITH_NAME and isinstance(name, str):
+                encoded_message["name"] = name
             if role == "tool":
                 encoded_message["tool_call_id"] = message.get("tool_call_id", "")
             messages.append(encoded_message)
@@ -209,15 +217,21 @@ class LangChainCodec(LlmCodec):
         )
         return alr
 
+def _lc_message_name_kwargs(message: JsonObject) -> dict[str, str]:
+    name = message.get("name")
+    if isinstance(name, str):
+        return {"name": name}
+    return {}
+
 def _relay_message_to_lc_message(message: JsonObject) -> BaseMessage:
     """Convert a NeMo Relay message dict to a LangChain `BaseMessage`."""
     type_ = message["type"]
     if type_ == "human":
-        return HumanMessage(content_blocks=message["content_blocks"])
+        return HumanMessage(content_blocks=message["content_blocks"], **_lc_message_name_kwargs(message))
     if type_ == "ai":
-        return AIMessage(content_blocks=message["content_blocks"])
+        return AIMessage(content_blocks=message["content_blocks"], **_lc_message_name_kwargs(message))
     if type_ == "system":
-        return SystemMessage(content_blocks=message["content_blocks"])
+        return SystemMessage(content_blocks=message["content_blocks"], **_lc_message_name_kwargs(message))
     if type_ == "chat":
         return ChatMessage(content_blocks=message["content_blocks"])
     if type_ == "function":
@@ -266,6 +280,9 @@ def _lc_messages_to_json(messages: list[BaseMessage]) -> list[JsonObject]:
     json_messages: list[JsonObject] = []
     for msg in messages:
         jm = {"type": msg.type, "content_blocks": msg.content_blocks}
+        name = getattr(msg, "name", None)
+        if msg.type in _LC_MESSAGE_TYPES_WITH_NAME and isinstance(name, str):
+            jm["name"] = name
         if msg.type == "tool":
             jm["tool_call_id"] = getattr(msg, "tool_call_id", "")
 
