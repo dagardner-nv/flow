@@ -72,7 +72,8 @@ class NemoRelayMiddleware(AgentMiddleware):
 
         async def _call(req: nemo_relay.LLMRequest) -> Any:
             response = handler(payload_to_model_request(request, req))
-            return model_response_to_json(response, values.object_codec)
+            resp = model_response_to_json(response, values.object_codec)
+            return resp
 
         async def _execute() -> Any:
             # Wrapper to ensure nemo_relay.llm.execute isn't called until we are inside an asyncio loop
@@ -98,7 +99,8 @@ class NemoRelayMiddleware(AgentMiddleware):
 
         async def _call(req: nemo_relay.LLMRequest) -> Any:
             response = await handler(payload_to_model_request(request, req))
-            return model_response_to_json(response, values.object_codec)
+            resp = model_response_to_json(response, values.object_codec)
+            return resp
 
         result = await nemo_relay.llm.execute(
             values.model_name,

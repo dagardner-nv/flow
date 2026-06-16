@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,15 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
     ToolMessage,
+    ChatMessage,
+    FunctionMessage,
+    RemoveMessage,
+    AIMessageChunk,
+    HumanMessageChunk,
+    FunctionMessageChunk,
+    ToolMessageChunk,
+    SystemMessageChunk,
+    ChatMessageChunk,
     messages_from_dict,
     messages_to_dict,
 )
@@ -27,12 +37,17 @@ if TYPE_CHECKING:
     from langchain.agents.middleware import ModelRequest
     from nemo_relay import JsonObject
 
+_logger = logging.getLogger(__name__)
+
 LANGCHAIN_MODEL_RESPONSE_KEY = "__nemo_relay_integrations_langchain_model_response"
 _LANGCHAIN_MODELED_REQUEST_KEYS = {"messages", "model", "tool_choice", "tools"}
 _LC_TO_RELAY_MESSAGE_ROLE = {
     "human": "user",
     "ai": "assistant",
 }
+
+_RELAY_ROLE_TO_LC_MESSAGE_TYPE = {v: k for k, v in _LC_TO_RELAY_MESSAGE_ROLE.items()}
+
 _FINISH_REASON_MAP = {
     "stop": "complete",
     "end_turn": "complete",
@@ -138,7 +153,7 @@ class LangChainCodec(LlmCodec):
         for message in messages:
             msg_type = message["type"]
             role = _LC_TO_RELAY_MESSAGE_ROLE.get(msg_type, msg_type)
-            annotated_messages.append({"role": role, "content": message.get("content", "")})
+            annotated_messages.append({"role": role, "content": message["content_blocks"]})
 
         model = payload.get("model")
         tools = payload.get("tools")
@@ -158,22 +173,85 @@ class LangChainCodec(LlmCodec):
         """Encode annotated request edits back into a LangChain-shaped payload."""
         payload = dict(original.content)
         payload.update(annotated.extra)
-        payload["messages"] = messages_to_dict(
-            [self._annotated_message_to_langchain(message) for message in annotated.messages]
-        )
+
+        messages: list[JsonObject] = []
+        for message in annotated.messages:
+            role = message["role"]
+            msg_type = _RELAY_ROLE_TO_LC_MESSAGE_TYPE.get(role, role)
+            messages.append({"type": msg_type, "content_blocks": message["content"]})
+
+        payload["messages"] = messages
         if annotated.model is not None:
             payload["model"] = annotated.model
         if annotated.tools is not None:
             payload["tools"] = annotated.tools
         if annotated.tool_choice is not None:
             payload["tool_choice"] = annotated.tool_choice
+
         return LLMRequest(dict(original.headers), payload)
 
     def decode_response(self, response: Any) -> AnnotatedLLMResponse:
         """Decode a serialized LangChain ``ModelResponse`` for observability."""
         payload = _model_response_payload_from_json(response)
-        return _model_response_to_annotated(payload)
 
+        messages = payload.get("messages")
+        last_ai_message = None
+        for msg in reversed(messages):
+            if msg["type"] == "ai":
+                last_ai_message = msg
+                break
+
+        if last_ai_message is None:
+            # Fall back to the last message
+            last_ai_message = messages[-1]
+
+        content_blocks = last_ai_message["content_blocks"]
+
+        msg_id = None
+        tool_calls = []
+        model_name = None
+        finish_reason = None
+        usage = None
+        message_text = None
+
+        for block in reversed(content_blocks):
+            if msg_id is None:
+                msg_id = block.get("id")
+
+            if block.get("type") == "tool_call":
+                tool_calls.append(
+                    {
+                        "id": str(block.get("id") or ""),
+                        "name": str(block["name"]),
+                        "arguments": block.get("args") or {},
+                    }
+                )
+            if model_name is None:
+                for key in ("model_name", "model", "model_id"):
+                    value = block.get(key)
+                    if isinstance(value, str) and value:
+                        model_name = value
+                        break
+
+            if finish_reason is None:
+                finish_reason = _message_finish_reason(block)
+            if usage is None:
+                usage = _message_usage(block)
+
+        extra = {}
+        if "structured_response" in payload:
+            extra["structured_response"] = payload["structured_response"]
+
+        alr = AnnotatedLLMResponse(
+            id=msg_id,
+            model=model_name,
+            message=message_text,
+            tool_calls=tool_calls or None,
+            finish_reason=finish_reason,
+            usage=usage,
+            extra=extra or None,
+        )
+        return alr
 
 def split_system_message(messages: list[BaseMessage]) -> tuple[SystemMessage | None, list[BaseMessage]]:
     """Split a leading system message into LangChain agent ``ModelRequest`` shape."""
@@ -181,6 +259,58 @@ def split_system_message(messages: list[BaseMessage]) -> tuple[SystemMessage | N
         return messages[0], messages[1:]
     return None, messages
 
+def _relay_message_to_lc_message(message: JsonObject) -> BaseMessage:
+    """Convert a NeMo Relay message dict to a LangChain `BaseMessage`."""
+    type_ = message["type"]
+    if type_ == "human":
+        return HumanMessage(content_blocks=message["content_blocks"])
+    if type_ == "ai":
+        return AIMessage(content_blocks=message["content_blocks"])
+    if type_ == "system":
+        return SystemMessage(content_blocks=message["content_blocks"])
+    if type_ == "chat":
+        return ChatMessage(content_blocks=message["content_blocks"])
+    if type_ == "function":
+        return FunctionMessage(content_blocks=message["content_blocks"])
+    if type_ == "tool":
+        return ToolMessage(content_blocks=message["content_blocks"])
+    if type_ == "remove":
+        return RemoveMessage(content_blocks=message["content_blocks"])
+    if type_ == "AIMessageChunk":
+        return AIMessageChunk(content_blocks=message["content_blocks"])
+    if type_ == "HumanMessageChunk":
+        return HumanMessageChunk(content_blocks=message["content_blocks"])
+    if type_ == "FunctionMessageChunk":
+        return FunctionMessageChunk(content_blocks=message["content_blocks"])
+    if type_ == "ToolMessageChunk":
+        return ToolMessageChunk(content_blocks=message["content_blocks"])
+    if type_ == "SystemMessageChunk":
+        return SystemMessageChunk(content_blocks=message["content_blocks"])
+    if type_ == "ChatMessageChunk":
+        return ChatMessageChunk(content_blocks=message["content_blocks"])
+    msg = f"Got unexpected message type: {type_}"
+    raise ValueError(msg)
+
+def _relay_messages_to_lc_messages(
+        relay_messages: list[JsonObject],
+        extract_system_message: bool) -> tuple[SystemMessage | None, list[BaseMessage]]:
+    """
+    Convert a list of NeMo Relay message dicts to a list of LangChain `BaseMessage`s.
+    when extract_system_message is True, the first system message encountered will be returned separately.
+    """
+    lc_messages: list[BaseMessage] = []
+    system_message: SystemMessage | None = None
+    for message in relay_messages:
+        try:
+            lc_message = _relay_message_to_lc_message(message)
+            if extract_system_message and system_message is None and isinstance(lc_message, SystemMessage):
+                system_message = lc_message
+            else:
+                lc_messages.append(lc_message)
+        except Exception:
+            _logger.error("Failed to convert relay message to LangChain message: %s", message, exc_info=True)
+
+    return system_message, lc_messages
 
 def lc_model_request_to_relay_llm_request(model_name: str | None, request: ModelRequest[Any]) -> LLMRequest:
     """
@@ -211,22 +341,26 @@ def lc_model_request_to_relay_llm_request(model_name: str | None, request: Model
 
 
 def payload_to_model_request(
-    original: ModelRequest[Any],
-    llm_request: LLMRequest,
+    lc_request: ModelRequest[Any],
+    relay_request: LLMRequest,
 ) -> ModelRequest[Any]:
     """Apply supported NeMo Relay request-intercept edits back to ``ModelRequest``."""
     overrides: dict[str, Any] = {}
 
-    raw_messages = llm_request.content.get("messages")
-    if isinstance(raw_messages, list) and len(raw_messages) > 0:
-        try:
-            system_message, messages = split_system_message(messages_from_dict(raw_messages))
-            overrides["system_message"] = system_message
-            overrides["messages"] = messages
-        except Exception:
-            pass
+    relay_messages = relay_request.content["messages"]
+    system_message, lc_messages = _relay_messages_to_lc_messages(relay_messages, extract_system_message=True)
 
-    model_settings = llm_request.content.get("model_settings")
+    if system_message is not None:
+        overrides["system_message"] = system_message
+
+    overrides["messages"] = lc_messages
+
+    if system_message is not None:
+        overrides["system_message"] = system_message
+
+    overrides["messages"] = lc_messages
+
+    model_settings = relay_request.content.get("model_settings")
     if isinstance(model_settings, dict):
         # Using dict() to ensure we have a copy
         model_settings_copy = dict(model_settings)
@@ -238,30 +372,38 @@ def payload_to_model_request(
         overrides["model_settings"] = {}
         extra_headers = {}
 
-    if len(llm_request.headers) > 0:
-        extra_headers.update(llm_request.headers)
+    if len(relay_request.headers) > 0:
+        extra_headers.update(relay_request.headers)
         overrides["model_settings"]["extra_headers"] = extra_headers
 
-    if "tool_choice" in llm_request.content:
-        overrides["tool_choice"] = llm_request.content["tool_choice"]
+    if "tool_choice" in relay_request.content:
+        overrides["tool_choice"] = relay_request.content["tool_choice"]
 
-    return original.override(**overrides) if overrides else original
+    return lc_request.override(**overrides) if overrides else lc_request
 
 
 def _model_response_payload(response: ModelResponse[Any], codec: Any) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "messages": messages_to_dict(response.result),
+    messages: list[JsonObject] = []
+    for msg in response.result:
+        if msg.content_blocks is not None:
+            messages.append({"type": msg.type, "content_blocks": msg.content_blocks})
+
+    payload: JsonObject = {
+        "messages": messages,
     }
+
     if response.structured_response is not None:
         payload["structured_response"] = codec.to_json(response.structured_response)
+
     return payload
 
 
 def _model_response_payload_from_json(payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict) or LANGCHAIN_MODEL_RESPONSE_KEY not in payload:
+    try:
+        response_payload = payload[LANGCHAIN_MODEL_RESPONSE_KEY]
+    except KeyError:
         raise TypeError("expected serialized LangChain ModelResponse payload")
 
-    response_payload = payload[LANGCHAIN_MODEL_RESPONSE_KEY]
     if not isinstance(response_payload, dict):
         raise TypeError("expected serialized LangChain ModelResponse object")
 
@@ -276,13 +418,17 @@ def _model_response_from_payload(payload: Any, codec: Any) -> ModelResponse[Any]
     if not isinstance(raw_messages, list):
         return None
 
+    _, lc_messages = _relay_messages_to_lc_messages(raw_messages, extract_system_message=False)
+
     structured_response = None
     if "structured_response" in payload:
         structured_response = codec.from_json(payload["structured_response"])
-    return ModelResponse(
-        result=messages_from_dict(raw_messages),
+
+    mr = ModelResponse(
+        result=lc_messages,
         structured_response=structured_response,
     )
+    return mr
 
 
 def model_response_to_json(response: ModelResponse[Any], codec: Any) -> Any:
@@ -293,6 +439,7 @@ def model_response_to_json(response: ModelResponse[Any], codec: Any) -> Any:
 
 
 def _message_content_text(message: BaseMessage) -> str | None:
+    return None
     content = message.content
     if content is None:
         return None
@@ -339,67 +486,10 @@ def _message_usage(message: BaseMessage) -> dict[str, Any] | None:
 
     return mapped or None
 
-
-def _message_model(message: BaseMessage) -> str | None:
-    metadata = getattr(message, "response_metadata", None)
-    if not isinstance(metadata, dict):
-        return None
-    for key in ("model_name", "model", "model_id"):
-        value = metadata.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
-def _message_response_tool_calls(message: BaseMessage) -> list[dict[str, Any]] | None:
-    if not isinstance(message, AIMessage):
-        return None
-    tool_calls = getattr(message, "tool_calls", [])
-    if not tool_calls:
-        return None
-
-    return [
-        {
-            "id": str(tool_call.get("id") or ""),
-            "name": str(tool_call["name"]),
-            "arguments": tool_call.get("args") or {},
-        }
-        for tool_call in tool_calls
-    ]
-
-
-def _model_response_to_annotated(payload: dict[str, Any]) -> AnnotatedLLMResponse:
-    raw_messages = payload.get("messages")
-    if not isinstance(raw_messages, list) or not raw_messages:
-        raise TypeError("expected serialized LangChain ModelResponse messages")
-
-    messages = messages_from_dict(raw_messages)
-    message = next((item for item in reversed(messages) if isinstance(item, AIMessage)), messages[-1])
-    extra = {}
-    if "structured_response" in payload:
-        extra["structured_response"] = payload["structured_response"]
-
-    return AnnotatedLLMResponse(
-        id=getattr(message, "id", None),
-        model=_message_model(message),
-        message=_message_content_text(message),
-        tool_calls=_message_response_tool_calls(message),
-        finish_reason=_message_finish_reason(message),
-        usage=_message_usage(message),
-        extra=extra or None,
-    )
-
-
 def model_response_from_json(payload: Any, codec: Any) -> ModelResponse[Any]:
     """Deserialize a ``ModelResponse`` serialized by ``best_effort_model_response_to_json``."""
-    if isinstance(payload, dict) and LANGCHAIN_MODEL_RESPONSE_KEY in payload:
-        decoded = _model_response_from_payload(payload[LANGCHAIN_MODEL_RESPONSE_KEY], codec)
-        if decoded is not None:
-            return decoded
-    decoded = codec.from_json(payload)
-    if isinstance(decoded, ModelResponse):
-        return decoded
-    raise TypeError(f"NeMo Relay model execution returned {type(decoded)!r}, expected ModelResponse")
+    payload_data = _model_response_payload_from_json(payload)
+    return _model_response_from_payload(payload_data, codec)
 
 
 def _prepare_lc_payloads(payload: Any) -> Any:
