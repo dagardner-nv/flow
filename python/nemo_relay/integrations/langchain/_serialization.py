@@ -127,7 +127,10 @@ class LangChainCodec(LlmCodec):
         for message in annotated.messages:
             role = message["role"]
             msg_type = _RELAY_ROLE_TO_LC_MESSAGE_TYPE.get(role, role)
-            messages.append({"type": msg_type, "content_blocks": message["content"]})
+            encoded_message = {"type": msg_type, "content_blocks": message["content"]}
+            if role == "tool":
+                encoded_message["tool_call_id"] = message.get("tool_call_id", "")
+            messages.append(encoded_message)
 
         payload["messages"] = messages
         if annotated.model is not None:
@@ -182,8 +185,12 @@ class LangChainCodec(LlmCodec):
                         model_name = value
                         break
 
+            if message_text is None:
+                message_text = _message_content_text(block)
+
             if finish_reason is None:
                 finish_reason = _message_finish_reason(block)
+
             if usage is None:
                 usage = _message_usage(block)
 
@@ -216,7 +223,7 @@ def _relay_message_to_lc_message(message: JsonObject) -> BaseMessage:
     if type_ == "function":
         return FunctionMessage(content_blocks=message["content_blocks"])
     if type_ == "tool":
-        return ToolMessage(content_blocks=message["content_blocks"])
+        return ToolMessage(content_blocks=message["content_blocks"], tool_call_id=str(message.get("tool_call_id") or ""))
     if type_ == "remove":
         return RemoveMessage(content_blocks=message["content_blocks"])
     if type_ == "AIMessageChunk":
@@ -383,46 +390,78 @@ def model_response_to_json(response: ModelResponse[Any], codec: Any) -> Any:
     }
 
 
-def _message_content_text(message: BaseMessage) -> str | None:
-    return None
-    content = message.content
-    if content is None:
+def _message_content_text(content_block: JsonObject) -> str | None:
+    if isinstance(content_block, str):
+        return content_block
+    if not isinstance(content_block, dict):
         return None
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text", item.get("content"))
-                if isinstance(text, str):
-                    parts.append(text)
-        return "\n".join(parts) if parts else None
-    return str(content)
 
-
-def _message_finish_reason(message: BaseMessage) -> str | dict[str, str] | None:
-    metadata = getattr(message, "response_metadata", None)
-    if not isinstance(metadata, dict):
-        return None
-    for key in ("finish_reason", "stop_reason"):
-        value = metadata.get(key)
+    for key in ("text", "content", "reasoning"):
+        value = content_block.get(key)
         if isinstance(value, str) and value:
-            return _FINISH_REASON_MAP.get(value, {"unknown": value})
+            return value
+        if isinstance(value, dict):
+            for nested_key in ("text", "content", "summary"):
+                nested_value = value.get(nested_key)
+                if isinstance(nested_value, str) and nested_value:
+                    return nested_value
     return None
 
 
-def _message_usage(message: BaseMessage) -> dict[str, Any] | None:
-    usage = getattr(message, "usage_metadata", None)
-    if not isinstance(usage, dict):
+def _message_finish_reason(content_block: dict[str, Any]) -> str | dict[str, str] | None:
+    if not isinstance(content_block, dict):
+        return None
+
+    for metadata in (
+        content_block,
+        content_block.get("response_metadata"),
+        content_block.get("metadata"),
+        content_block.get("extras"),
+    ):
+        if not isinstance(metadata, dict):
+            continue
+        for key in ("finish_reason", "stop_reason"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                return _FINISH_REASON_MAP.get(value, {"unknown": value})
+    return None
+
+
+def _message_usage(content_block: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(content_block, dict):
+        return None
+
+    usage = None
+    for metadata in (
+        content_block,
+        content_block.get("usage_metadata"),
+        content_block.get("usage"),
+        content_block.get("token_usage"),
+        content_block.get("metadata"),
+        content_block.get("extras"),
+    ):
+        if isinstance(metadata, dict) and any(
+            key in metadata
+            for key in (
+                "input_tokens",
+                "output_tokens",
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+            )
+        ):
+            usage = metadata
+            break
+
+    if usage is None:
         return None
 
     mapped: dict[str, Any] = {}
     for source, target in (
         ("input_tokens", "prompt_tokens"),
         ("output_tokens", "completion_tokens"),
+        ("prompt_tokens", "prompt_tokens"),
+        ("completion_tokens", "completion_tokens"),
         ("total_tokens", "total_tokens"),
     ):
         value = usage.get(source)
